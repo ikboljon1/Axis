@@ -97,8 +97,8 @@ class ScreenAssistantService : Service() {
         val ov = overlay ?: return
         val cap = capturer ?: return
 
-        if (prefs.apiKey.isBlank()) {
-            ov.showResult(mode, "Не задан API-ключ Claude. Откройте приложение Axis и введите ключ.")
+        if (!prefs.isConfigured) {
+            ov.showResult(mode, "Не задан сервер Axis. Откройте приложение и укажите адрес сервера и токен.")
             return
         }
 
@@ -117,7 +117,7 @@ class ScreenAssistantService : Service() {
             ov.showLoading(mode)
             val answer = withContext(Dispatchers.IO) {
                 try {
-                    ClaudeAnalyzer(prefs.apiKey).analyze(shot, mode, prefs.customPrompt, prefs.precise)
+                    AxisServerClient(prefs.serverUrl, prefs.token).analyze(shot, mode, prefs.customPrompt, prefs.precise)
                 } catch (e: Exception) {
                     "Ошибка: ${e.message ?: e.javaClass.simpleName}"
                 } finally {

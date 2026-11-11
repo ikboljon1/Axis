@@ -24,22 +24,61 @@
             android:textAppearance="?attr/textAppearanceBodyMedium" />
 
         <com.google.android.material.textfield.TextInputLayout
-            android:id="@+id/apiKeyLayout"
+            android:id="@+id/serverUrlLayout"
             style="?attr/textInputOutlinedStyle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
-            android:hint="Claude API-ключ (sk-ant-…)"
+            android:hint="Адрес сервера (https://…)">
+
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/serverUrl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textUri"
+                android:singleLine="true" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/tokenLayout"
+            style="?attr/textInputOutlinedStyle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:hint="Токен доступа"
             app:endIconMode="password_toggle"
             xmlns:app="http://schemas.android.com/apk/res-auto">
 
             <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/apiKey"
+                android:id="@+id/token"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:inputType="textPassword"
                 android:singleLine="true" />
         </com.google.android.material.textfield.TextInputLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/serverStatus"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="ИИ работает через вашу подписку Claude на сервере"
+                android:textAppearance="?attr/textAppearanceBodySmall" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/checkButton"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Проверить" />
+        </LinearLayout>
 
         <com.google.android.material.textfield.TextInputLayout
             style="?attr/textInputOutlinedExposedDropdownMenuStyle"
@@ -94,7 +133,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:text="Точный анализ (медленнее)" />
+            android:text="Точный анализ (сильнее модель, медленнее)" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/startButton"

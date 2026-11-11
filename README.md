@@ -22,21 +22,60 @@ Android‑приложение: плавающая кнопка поверх л�
 
 ## Как это работает
 
+ИИ работает **через вашу подписку Claude**, без API‑ключа. Подписка подключена на сервере, где уже
+стоит Claude Code (так же, как «Чат с Claude» в ZeroFy — `scripts/claude_chat_worker.py` в ERP_Textile).
+
 ```
-[Плавающая кнопка] → MediaProjection (запись экрана, 1 кадр)
-                   → уменьшение до 1568px, JPEG
-                   → Claude API (изображение + промпт режима)
-                   → ответ в панели поверх экрана
+Телефон (Axis)                       Ваш сервер                         Claude
+[кнопка] → снимок экрана → JPEG  ──►  server/axis_server.py  ──►  claude -p (подписка)
+          ◄── ответ в панели  ◄──────  {"ok": true, "text"}  ◄──
 ```
 
+- В телефоне нет ключа Claude — только адрес сервера и личный токен доступа.
+- Сервер на каждый снимок запускает отдельный `claude -p` в пустой временной папке: без инструментов,
+  без MCP и без сохранения сессии. Снимок передаётся через stdin и на диск не пишется.
+  `ANTHROPIC_API_KEY` убирается из окружения, поэтому отвечает подписка, а не API.
+- «Точный анализ» на сервере = модель `opus`, обычный режим = `sonnet` (настраивается).
+
+Код приложения:
 - `ScreenAssistantService` — foreground‑сервис (тип `mediaProjection`), держит сессию захвата и оверлей.
 - `ScreenCapturer` — один `VirtualDisplay` + `ImageReader`, хранит последний кадр; при повороте экрана делает `resize`.
-- `OverlayController` — плавающая кнопка и панель с ответом (`TYPE_APPLICATION_OVERLAY`). Перед снимком скрывает себя, чтобы не попасть на скриншот.
-- `ClaudeAnalyzer` — запрос к Claude через официальный SDK `com.anthropic:anthropic-java`
-  (модель `claude-opus-5-5`, включён серверный fallback на случай отказа модели).
+- `OverlayController` — плавающая кнопка и панель с ответом. Перед снимком скрывает себя, чтобы не попасть на скриншот.
+- `AxisServerClient` — отправка снимка на сервер (`HttpURLConnection`, без сторонних библиотек).
 - `AnalysisMode` — промпты режимов. Новый режим = новая запись в enum.
 
-## Сборка и запуск
+## Установка сервера
+
+На сервере, где Claude Code уже вошёл в подписку (`claude login`; или токен из `claude setup-token`
+в `CLAUDE_CODE_OAUTH_TOKEN`). Нужен только Python 3.10+ — сторонние пакеты не используются.
+
+```bash
+sudo mkdir -p /opt/axis /etc/axis
+sudo cp -r server /opt/axis/
+sudo cp server/axis.env.example /etc/axis/axis.env && sudo chmod 600 /etc/axis/axis.env
+openssl rand -hex 32          # → вставьте в AXIS_TOKEN в /etc/axis/axis.env
+sudo cp server/axis-server.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now axis-server
+journalctl -u axis-server -f  # лог
+```
+
+Сервер слушает `127.0.0.1:8787`. Наружу отдайте через nginx с HTTPS, например на поддомене:
+
+```nginx
+server {
+    server_name axis.zerofy.one;
+    client_max_body_size 12m;
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_read_timeout 300s;
+    }
+    # listen 443 ssl; ... (certbot)
+}
+```
+
+Проверка: `curl -H "Authorization: Bearer <AXIS_TOKEN>" https://axis.zerofy.one/v1/ping` → `{"ok": true, ...}`.
+
+## Сборка и запуск приложения
 
 Требования: Android Studio (или JDK 17+ и Android SDK 35). Минимальная версия Android — 8.0 (API 26).
 
@@ -46,16 +85,17 @@ Android‑приложение: плавающая кнопка поверх л�
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
 
-1. Получите API‑ключ на https://console.anthropic.com/ и вставьте его в приложении.
+1. В приложении укажите адрес сервера (`https://axis.zerofy.one`) и токен (`AXIS_TOKEN`), нажмите «Проверить».
 2. Выберите режим и нажмите «Запустить».
 3. Разрешите «Показ поверх других приложений» и запись экрана.
 4. Откройте нужное приложение и нажмите на синюю кнопку с глазом.
 
-## Ограничения и что дальше
+## Ограничения
 
-- Ключ API хранится локально на телефоне (`SharedPreferences`). Для публичного релиза нужен свой
-  backend‑прокси, чтобы ключ не попадал в приложение.
-- Каждый анализ — платный запрос к API. Режим «быстро» дешевле и отвечает за несколько секунд.
+- **Подписка — для личного использования.** Подписка Claude рассчитана на одного человека. Токен Axis
+  не раздавайте; если Axis будет у клиентов или сотрудников, переключите сервер на API‑ключ.
+- Ответ по подписке идёт через Claude Code, поэтому медленнее прямого API: обычно 5–20 с,
+  в «Точном анализе» дольше. Запросы расходуют лимиты вашей подписки.
 - Для шахмат Claude распознаёт позицию по картинке; для максимальной силы игры можно добавить
   движок Stockfish: Claude → FEN, Stockfish → лучший ход, Claude → объяснение.
 - На Android 14+ при каждом запуске система заново спрашивает разрешение на запись экрана — это

@@ -15,6 +15,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.widget.doAfterTextChanged
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import one.zerosoft.axis.databinding.ActivityMainBinding
 
 class MainActivity : AppCompatActivity() {
@@ -45,8 +49,11 @@ class MainActivity : AppCompatActivity() {
         setContentView(b.root)
         prefs = Prefs(this)
 
-        b.apiKey.setText(prefs.apiKey)
-        b.apiKey.doAfterTextChanged { prefs.apiKey = it?.toString().orEmpty() }
+        b.serverUrl.setText(prefs.serverUrl)
+        b.serverUrl.doAfterTextChanged { prefs.serverUrl = it?.toString().orEmpty() }
+        b.token.setText(prefs.token)
+        b.token.doAfterTextChanged { prefs.token = it?.toString().orEmpty() }
+        b.checkButton.setOnClickListener { checkServer() }
 
         val modes = AnalysisMode.entries
         b.modeSpinner.setAdapter(ArrayAdapter(this, android.R.layout.simple_list_item_1, modes.map { it.title }))
@@ -89,11 +96,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onStartClicked() {
-        if (prefs.apiKey.isBlank()) {
-            b.apiKeyLayout.error = "Введите API-ключ"
-            return
-        }
-        b.apiKeyLayout.error = null
+        b.serverUrlLayout.error = if (prefs.serverUrl.isBlank()) "Укажите адрес сервера" else null
+        b.tokenLayout.error = if (prefs.token.isBlank()) "Укажите токен" else null
+        if (!prefs.isConfigured) return
 
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this, "Разрешите Axis показываться поверх других приложений", Toast.LENGTH_LONG).show()
@@ -108,6 +113,23 @@ class MainActivity : AppCompatActivity() {
             return
         }
         start()
+    }
+
+    private fun checkServer() {
+        if (!prefs.isConfigured) {
+            b.serverStatus.text = "Укажите адрес сервера и токен"
+            return
+        }
+        b.checkButton.isEnabled = false
+        b.serverStatus.text = "Проверяю…"
+        lifecycleScope.launch {
+            val status = withContext(Dispatchers.IO) {
+                runCatching { AxisServerClient(prefs.serverUrl, prefs.token).ping() }
+                    .getOrElse { "Нет связи: ${it.message ?: it.javaClass.simpleName}" }
+            }
+            b.serverStatus.text = status
+            b.checkButton.isEnabled = true
+        }
     }
 
     private fun start() {

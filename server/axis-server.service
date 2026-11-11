@@ -1,0 +1,14 @@
+[Unit]
+Description=Axis server (screenshots -> Claude Code subscription)
+After=network.target
+
+[Service]
+# Run as the user that did `claude login`, or set CLAUDE_CODE_OAUTH_TOKEN in /etc/axis/axis.env
+User=root
+EnvironmentFile=/etc/axis/axis.env
+ExecStart=/usr/bin/python3 /opt/axis/server/axis_server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
