@@ -19,6 +19,12 @@ API
   POST /v1/analyze  Authorization: Bearer <AXIS_TOKEN>
        {"system": "...", "prompt": "...", "image": "<base64 jpeg>", "precise": false}
        → {"ok": true, "text": "..."} | {"ok": false, "error": "..."}
+  POST /v1/chess    Authorization: Bearer <AXIS_TOKEN>
+       {"image": "<base64 jpeg of the board>", "precise": false}
+       Claude reads the position, Stockfish chooses the move (see axis_chess.py).
+       → {"ok": true, "text": "Ход: Кg1–f3  (+0.4)", "best": "g1f3", "alternatives": [...],
+          "white_bottom": true, "fen": "...", "board": [l, t, r, b]}
+       → 503 {"ok": false, "code": "no_engine"} if Stockfish is not installed
 
 Run
   AXIS_TOKEN=$(openssl rand -hex 32) python3 axis_server.py --port 8787
@@ -30,6 +36,9 @@ Settings (env)
   AXIS_MODEL_PRECISE   model for "precise analysis" (default: opus)
   AXIS_PARALLEL        answers at the same time (default 2)
   AXIS_TIMEOUT         limit per answer, s (default 180)
+  STOCKFISH_PATH       stockfish binary (default: stockfish from PATH or /usr/games/stockfish)
+  AXIS_ENGINE_FAST     Stockfish think time, s (default 1.5)
+  AXIS_ENGINE_PRECISE  Stockfish think time in "precise analysis", s (default 5)
 """
 from __future__ import annotations
 
@@ -47,6 +56,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import axis_chess
+
 DROP_ENV = ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDECODE', 'AXIS_TOKEN', 'DATABASE_URL',
             'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'GH_TOKEN', 'GITHUB_TOKEN')
 MAX_BODY = 12 * 1024 * 1024          # base64 screenshot ~1–2 MB, leave headroom
@@ -56,6 +67,8 @@ TOKEN = os.environ.get('AXIS_TOKEN', '')
 MODEL_FAST = os.environ.get('AXIS_MODEL_FAST', 'sonnet')
 MODEL_PRECISE = os.environ.get('AXIS_MODEL_PRECISE', 'opus')
 TIMEOUT = int(os.environ.get('AXIS_TIMEOUT', 180))
+ENGINE_FAST = float(os.environ.get('AXIS_ENGINE_FAST', 1.5))
+ENGINE_PRECISE = float(os.environ.get('AXIS_ENGINE_PRECISE', 5))
 SLOTS = threading.BoundedSemaphore(int(os.environ.get('AXIS_PARALLEL', 2)))
 _busy = 0
 _busy_lock = threading.Lock()
@@ -168,41 +181,95 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {'ok': False, 'error': 'Неверный токен доступа'})
         self._send(200, {'ok': True, 'busy': _busy})
 
-    def do_POST(self):
-        global _busy
-        if self.path.rstrip('/') != '/v1/analyze':
-            return self._send(404, {'ok': False, 'error': 'not found'})
-        if not self._authorized():
-            return self._send(401, {'ok': False, 'error': 'Неверный токен доступа'})
+    def _read_json(self) -> dict | None:
         try:
             length = int(self.headers.get('Content-Length', '0'))
         except ValueError:
             length = 0
         if length <= 0 or length > MAX_BODY:
-            return self._send(413, {'ok': False, 'error': 'Слишком большой или пустой запрос'})
+            self._send(413, {'ok': False, 'error': 'Слишком большой или пустой запрос'})
+            return None
         try:
             body = json.loads(self.rfile.read(length))
-            system = str(body.get('system') or '')[:MAX_TEXT]
-            prompt = str(body.get('prompt') or 'Что на этом экране?')[:MAX_TEXT]
             image_b64 = str(body['image'])
-            precise = bool(body.get('precise'))
-            media_type = detect_media_type(base64.b64decode(image_b64, validate=True)[:16])
+            body['_media_type'] = detect_media_type(base64.b64decode(image_b64, validate=True)[:16])
         except (ValueError, KeyError, TypeError, binascii.Error):
-            return self._send(400, {'ok': False, 'error': 'Неверный формат запроса'})
-        if not media_type:
-            return self._send(400, {'ok': False, 'error': 'Изображение должно быть JPEG, PNG или WebP'})
+            self._send(400, {'ok': False, 'error': 'Неверный формат запроса'})
+            return None
+        if not body['_media_type']:
+            self._send(400, {'ok': False, 'error': 'Изображение должно быть JPEG, PNG или WebP'})
+            return None
+        return body
 
-        if not SLOTS.acquire(timeout=TIMEOUT):
-            return self._send(503, {'ok': False, 'error': 'Сервер занят, попробуйте позже'})
-        with _busy_lock:
-            _busy += 1
-        try:
-            result = run_claude(system, prompt, image_b64, media_type, precise)
-        finally:
+    def do_POST(self):
+        path = self.path.rstrip('/')
+        if path not in ('/v1/analyze', '/v1/chess'):
+            return self._send(404, {'ok': False, 'error': 'not found'})
+        if not self._authorized():
+            return self._send(401, {'ok': False, 'error': 'Неверный токен доступа'})
+        if path == '/v1/chess' and not axis_chess.stockfish_path():
+            return self._send(503, {'ok': False, 'code': 'no_engine', 'error': 'На сервере не установлен Stockfish'})
+        body = self._read_json()
+        if body is None:
+            return
+        precise = bool(body.get('precise'))
+
+        with Slot() as ok:
+            if not ok:
+                return self._send(503, {'ok': False, 'error': 'Сервер занят, попробуйте позже'})
+            if path == '/v1/chess':
+                result = chess_answer(body['image'], body['_media_type'], precise)
+            else:
+                system = str(body.get('system') or '')[:MAX_TEXT]
+                prompt = str(body.get('prompt') or 'Что на этом экране?')[:MAX_TEXT]
+                result = run_claude(system, prompt, body['image'], body['_media_type'], precise)
+        self._send(200 if result['ok'] else 502, result)
+
+
+class Slot:
+    """One of AXIS_PARALLEL answer slots; counts busy answers for /v1/ping."""
+
+    def __enter__(self) -> bool:
+        global _busy
+        self.acquired = SLOTS.acquire(timeout=TIMEOUT)
+        if self.acquired:
+            with _busy_lock:
+                _busy += 1
+        return self.acquired
+
+    def __exit__(self, *exc) -> None:
+        global _busy
+        if self.acquired:
             with _busy_lock:
                 _busy -= 1
             SLOTS.release()
-        self._send(200 if result['ok'] else 502, result)
+
+
+def chess_answer(image_b64: str, media_type: str, precise: bool) -> dict:
+    """Claude reads the board (one retry with the problem named), Stockfish picks the move."""
+    prompt = 'Перепиши позицию с этой доски.'
+    problem = ''
+    for attempt in range(2):
+        rec = run_claude(axis_chess.RECOGNIZE_SYSTEM, prompt + problem, image_b64, media_type, precise)
+        if not rec['ok']:
+            return rec
+        try:
+            recognition = axis_chess.parse_recognition(rec['text'])
+            started = time.monotonic()
+            answer = axis_chess.solve(recognition, ENGINE_PRECISE if precise else ENGINE_FAST)
+            log(f'chess: {answer["fen"]} → {answer["best"]} ({int((time.monotonic() - started) * 1000)} ms engine)')
+            return answer
+        except axis_chess.ChessError as e:
+            log(f'chess: recognition problem (attempt {attempt + 1}): {e}')
+            if str(e).startswith('На экране не видно') or attempt == 1:
+                return {'ok': False, 'error': str(e)}
+            problem = (f'\n\nПредыдущая попытка распознавания была неверной: {e}. '
+                       'Посмотри на доску ещё раз внимательнее, клетку за клеткой.')
+        except FileNotFoundError:
+            return {'ok': False, 'code': 'no_engine', 'error': 'На сервере не установлен Stockfish'}
+        except RuntimeError as e:
+            return {'ok': False, 'error': f'Stockfish: {e}'}
+    return {'ok': False, 'error': 'Не удалось распознать позицию'}
 
 
 def main() -> None:

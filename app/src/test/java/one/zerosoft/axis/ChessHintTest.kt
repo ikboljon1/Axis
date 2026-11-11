@@ -36,6 +36,16 @@ class ChessHintTest {
     }
 
     @Test
+    fun serverReply() {
+        val ok = ChessHint.fromJson(org.json.JSONObject(
+            """{"ok": true, "best": "h5f7", "alternatives": [], "white_bottom": true, "board": null}"""))
+        assertEquals("h5f7", ok!!.best)
+        assertNull(ok.boardFraction)
+        // mate/stalemate: no move to draw
+        assertNull(ChessHint.fromJson(org.json.JSONObject("""{"ok": true, "best": null}""")))
+    }
+
+    @Test
     fun squareCentersForBothOrientations() {
         val b = BoardRect(0f, 800f, 800f) // 100 px cells
         assertEquals(50f to 1550f, ChessHint.squareCenter("a1", b, whiteBottom = true))

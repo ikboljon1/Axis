@@ -44,6 +44,27 @@ class AxisServerClient(serverUrl: String, private val token: String) {
         }
     }
 
+    /** Server answer for the chess mode (Claude reads the board, Stockfish picks the move). */
+    sealed class ChessReply {
+        data class Ok(val text: String, val hint: ChessHint?) : ChessReply()
+        data class Failed(val text: String) : ChessReply()
+        /** Old server or no Stockfish there — use [analyze] with the chess prompt instead. */
+        data object NotSupported : ChessReply()
+    }
+
+    fun chess(boardImage: Bitmap, precise: Boolean): ChessReply {
+        val body = JSONObject()
+            .put("image", encodeJpeg(boardImage))
+            .put("precise", precise)
+        val (code, json) = request("POST", "$base/v1/chess", body.toString(), timeoutMs = 240_000)
+        return when {
+            json.optBoolean("ok") -> ChessReply.Ok(json.optString("text"), ChessHint.fromJson(json))
+            code == 404 || json.optString("code") == "no_engine" -> ChessReply.NotSupported
+            code == 401 -> ChessReply.Failed("Неверный токен доступа. Проверьте настройки Axis.")
+            else -> ChessReply.Failed(json.optString("error").ifBlank { "Ошибка сервера (код $code)" })
+        }
+    }
+
     private fun request(method: String, url: String, body: String?, timeoutMs: Int): Pair<Int, JSONObject> {
         if (!base.startsWith("https://") && !base.startsWith("http://")) {
             throw IOException("Адрес сервера должен начинаться с https://")

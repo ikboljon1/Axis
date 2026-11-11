@@ -40,19 +40,23 @@ data class ChessHint(
             val text = answer.removeRange(match.range).trim()
             val hint = runCatching {
                 val raw = match.groupValues[1].trim().removePrefix("```json").removePrefix("```").removeSuffix("```")
-                val json = JSONObject(raw.trim())
-                val best = json.getString("best").trim().lowercase()
-                require(MOVE.matches(best))
-                val alts = json.optJSONArray("alternatives")?.let { arr ->
-                    (0 until arr.length()).map { arr.optString(it).trim().lowercase() }.filter { MOVE.matches(it) && it != best }
-                }.orEmpty().take(2)
-                val board = json.optJSONArray("board")?.let { arr ->
-                    if (arr.length() == 4) (0 until 4).map { arr.getDouble(it).toFloat().coerceIn(0f, 1f) } else null
-                }
-                ChessHint(best, alts, json.optBoolean("white_bottom", true), board)
+                fromJson(JSONObject(raw.trim()))
             }.getOrNull()
             return text to hint
         }
+
+        /** {"best": "g1f3", "alternatives": [...], "white_bottom": true, "board": [l, t, r, b]} → hint, or null. */
+        fun fromJson(json: JSONObject): ChessHint? = runCatching {
+            val best = json.optString("best").trim().lowercase()
+            if (!MOVE.matches(best)) return null
+            val alts = json.optJSONArray("alternatives")?.let { arr ->
+                (0 until arr.length()).map { arr.optString(it).trim().lowercase() }.filter { MOVE.matches(it) && it != best }
+            }.orEmpty().distinct().take(2)
+            val board = json.optJSONArray("board")?.let { arr ->
+                if (arr.length() == 4) (0 until 4).map { arr.getDouble(it).toFloat().coerceIn(0f, 1f) } else null
+            }
+            ChessHint(best, alts, json.optBoolean("white_bottom", true), board)
+        }.getOrNull()
 
         /** Center of a square ("e4") on the screen. */
         fun squareCenter(square: String, board: BoardRect, whiteBottom: Boolean): Pair<Float, Float> {

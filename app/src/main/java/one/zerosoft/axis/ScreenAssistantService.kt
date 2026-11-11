@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.content.res.Configuration
+import android.graphics.Bitmap
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -25,8 +26,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -118,41 +117,74 @@ class ScreenAssistantService : Service() {
             }
 
             ov.showLoading(mode)
-            val width = shot.width
-            val height = shot.height
-            val (answer, foundBoard) = withContext(Dispatchers.IO) {
-                try {
-                    coroutineScope {
-                        // While Claude thinks, look for the board on the screenshot ourselves.
-                        val board = if (mode == AnalysisMode.CHESS) {
-                            async(Dispatchers.Default) { runCatching { BoardDetector.detect(shot) }.getOrNull() }
-                        } else null
-                        val text = try {
-                            AxisServerClient(prefs.serverUrl, prefs.token).analyze(shot, mode, prefs.customPrompt, prefs.precise)
-                        } catch (e: Exception) {
-                            "Ошибка: ${e.message ?: e.javaClass.simpleName}"
-                        }
-                        text to board?.await()
+            val client = AxisServerClient(prefs.serverUrl, prefs.token)
+            try {
+                if (mode == AnalysisMode.CHESS) analyzeChess(shot, client, prefs.precise, ov)
+                else {
+                    val answer = withContext(Dispatchers.IO) {
+                        runCatching { client.analyze(shot, mode, prefs.customPrompt, prefs.precise) }
+                            .getOrElse { "Ошибка: ${it.message ?: it.javaClass.simpleName}" }
                     }
-                } finally {
-                    shot.recycle()
+                    ov.showResult(mode, answer)
                 }
-            }
-
-            if (mode != AnalysisMode.CHESS) {
-                ov.showResult(mode, answer)
-                return@launch
-            }
-            val (text, hint) = ChessHint.parse(answer)
-            val board = foundBoard ?: hint?.boardFromFraction(width, height)
-            if (hint != null && board != null) {
-                ov.showArrows(board, hint)
-                val boardCenter = board.top + board.size / 2
-                ov.showResult(mode, text, compact = true, atTop = boardCenter > height / 2f)
-            } else {
-                ov.showResult(mode, text.ifBlank { answer })
+            } finally {
+                shot.recycle()
             }
         }
+    }
+
+    /**
+     * Chess: find the board on the phone, send a close-up of it to the server, where Claude reads
+     * the position and Stockfish picks the move; then draw the arrows over the board.
+     * Falls back to Claude-only hints if the server has no Stockfish.
+     */
+    private suspend fun analyzeChess(shot: Bitmap, client: AxisServerClient, precise: Boolean, ov: OverlayController) {
+        val mode = AnalysisMode.CHESS
+        val width = shot.width
+        val height = shot.height
+        val found = withContext(Dispatchers.Default) { runCatching { BoardDetector.detect(shot) }.getOrNull() }
+
+        val reply = withContext(Dispatchers.IO) {
+            val image = found?.let { cropBoard(shot, it) } ?: shot
+            try {
+                client.chess(image, precise)
+            } catch (e: Exception) {
+                AxisServerClient.ChessReply.Failed("Ошибка: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                if (image !== shot) image.recycle()
+            }
+        }
+
+        val (text, hint) = when (reply) {
+            is AxisServerClient.ChessReply.Ok -> reply.text to reply.hint
+            is AxisServerClient.ChessReply.Failed -> reply.text to null
+            AxisServerClient.ChessReply.NotSupported -> {
+                // No engine on the server: Claude picks the move itself from the full screenshot.
+                val answer = withContext(Dispatchers.IO) {
+                    runCatching { client.analyze(shot, mode, "", precise) }
+                        .getOrElse { "Ошибка: ${it.message ?: it.javaClass.simpleName}" }
+                }
+                ChessHint.parse(answer)
+            }
+        }
+        // The server's board frame is relative to the image it got: only usable for the full screenshot.
+        val board = found ?: hint?.boardFromFraction(width, height)
+        if (hint != null && board != null) {
+            ov.showArrows(board, hint)
+            ov.showResult(mode, text, compact = true, atTop = board.top + board.size / 2 > height / 2f)
+        } else {
+            ov.showResult(mode, text)
+        }
+    }
+
+    /** The board plus a small margin (coordinates are often drawn just outside it). */
+    private fun cropBoard(shot: Bitmap, b: BoardRect): Bitmap {
+        val m = b.size * 0.04f
+        val l = (b.left - m).toInt().coerceIn(0, shot.width - 1)
+        val t = (b.top - m).toInt().coerceIn(0, shot.height - 1)
+        val r = (b.left + b.size + m).toInt().coerceIn(l + 1, shot.width)
+        val btm = (b.top + b.size + m).toInt().coerceIn(t + 1, shot.height)
+        return Bitmap.createBitmap(shot, l, t, r - l, btm - t)
     }
 
     @Suppress("DEPRECATION")
