@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.Axis" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/axis_primary</item>
+    </style>
+</resources>

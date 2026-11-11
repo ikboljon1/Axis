@@ -1,0 +1,5 @@
+<resources>
+    <color name="axis_primary">#3D5AFE</color>
+    <color name="axis_panel">#F2121826</color>
+    <color name="axis_panel_text">#FFECEFF4</color>
+</resources>
