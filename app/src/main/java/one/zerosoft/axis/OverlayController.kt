@@ -3,6 +3,7 @@ package one.zerosoft.axis
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.PixelFormat
+import android.os.Build
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -51,22 +52,43 @@ class OverlayController(
         gravity = Gravity.BOTTOM
     }
 
+    private val arrows = ArrowOverlayView(context)
+    private val arrowParams = WindowManager.LayoutParams(
+        WindowManager.LayoutParams.MATCH_PARENT,
+        WindowManager.LayoutParams.MATCH_PARENT,
+        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+        PixelFormat.TRANSLUCENT,
+    ).apply {
+        gravity = Gravity.TOP or Gravity.START
+        if (Build.VERSION.SDK_INT >= 28) {
+            layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        // Since Android 12 untouchable overlays must be partly transparent to let touches through.
+        if (Build.VERSION.SDK_INT >= 31) alpha = 0.8f
+    }
+
     private var panelShown = false
 
     init {
         setupBubble()
-        panel.closeButton.setOnClickListener { hidePanel() }
+        panel.closeButton.setOnClickListener { hidePanel(); clearArrows() }
         panel.retryButton.setOnClickListener { onAnalyze() }
         panel.stopButton.setOnClickListener { onStop() }
     }
 
     fun show(mode: AnalysisMode) {
         bubble.modeLabel.text = mode.title
+        wm.addView(arrows, arrowParams)
         wm.addView(bubble.root, bubbleParams)
     }
 
     fun setBubbleVisible(visible: Boolean) {
         bubble.root.visibility = if (visible) View.VISIBLE else View.INVISIBLE
+        arrows.visibility = if (visible) View.VISIBLE else View.INVISIBLE
         if (panelShown) panel.root.visibility = if (visible) View.VISIBLE else View.INVISIBLE
     }
 
@@ -78,8 +100,26 @@ class OverlayController(
         panel.retryButton.isEnabled = false
     }
 
-    fun showResult(mode: AnalysisMode, text: String) {
+    /** Draws the move arrows over the board (chess mode). */
+    fun showArrows(board: BoardRect, hint: ChessHint) = arrows.show(board, hint)
+
+    fun clearArrows() = arrows.clear()
+
+    /**
+     * [compact] — short panel (chess: the arrow is the answer, text is just the idea);
+     * [atTop] — put the panel at the top so it does not cover the board.
+     */
+    fun showResult(mode: AnalysisMode, text: String, compact: Boolean = false, atTop: Boolean = false) {
         bubble.progress.visibility = View.GONE
+        val density = context.resources.displayMetrics.density
+        panel.scroll.layoutParams = panel.scroll.layoutParams.apply {
+            height = ((if (compact) 96 else 220) * density).toInt()
+        }
+        val gravity = if (atTop) Gravity.TOP else Gravity.BOTTOM
+        if (panelParams.gravity != gravity) {
+            panelParams.gravity = gravity
+            if (panelShown) wm.updateViewLayout(panel.root, panelParams)
+        }
         showPanel()
         panel.title.text = mode.title
         panel.resultText.text = text
@@ -89,6 +129,7 @@ class OverlayController(
 
     fun remove() {
         runCatching { wm.removeView(bubble.root) }
+        runCatching { wm.removeView(arrows) }
         hidePanel()
     }
 

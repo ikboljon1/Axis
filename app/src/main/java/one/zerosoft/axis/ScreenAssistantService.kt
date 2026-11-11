@@ -25,6 +25,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -103,6 +105,7 @@ class ScreenAssistantService : Service() {
         }
 
         job = scope.launch {
+            ov.clearArrows()
             // Hide our own views so they are not in the screenshot, wait for a fresh frame.
             ov.setBubbleVisible(false)
             delay(350)
@@ -115,16 +118,40 @@ class ScreenAssistantService : Service() {
             }
 
             ov.showLoading(mode)
-            val answer = withContext(Dispatchers.IO) {
+            val width = shot.width
+            val height = shot.height
+            val (answer, foundBoard) = withContext(Dispatchers.IO) {
                 try {
-                    AxisServerClient(prefs.serverUrl, prefs.token).analyze(shot, mode, prefs.customPrompt, prefs.precise)
-                } catch (e: Exception) {
-                    "Ошибка: ${e.message ?: e.javaClass.simpleName}"
+                    coroutineScope {
+                        // While Claude thinks, look for the board on the screenshot ourselves.
+                        val board = if (mode == AnalysisMode.CHESS) {
+                            async(Dispatchers.Default) { runCatching { BoardDetector.detect(shot) }.getOrNull() }
+                        } else null
+                        val text = try {
+                            AxisServerClient(prefs.serverUrl, prefs.token).analyze(shot, mode, prefs.customPrompt, prefs.precise)
+                        } catch (e: Exception) {
+                            "Ошибка: ${e.message ?: e.javaClass.simpleName}"
+                        }
+                        text to board?.await()
+                    }
                 } finally {
                     shot.recycle()
                 }
             }
-            ov.showResult(mode, answer)
+
+            if (mode != AnalysisMode.CHESS) {
+                ov.showResult(mode, answer)
+                return@launch
+            }
+            val (text, hint) = ChessHint.parse(answer)
+            val board = foundBoard ?: hint?.boardFromFraction(width, height)
+            if (hint != null && board != null) {
+                ov.showArrows(board, hint)
+                val boardCenter = board.top + board.size / 2
+                ov.showResult(mode, text, compact = true, atTop = boardCenter > height / 2f)
+            } else {
+                ov.showResult(mode, text.ifBlank { answer })
+            }
         }
     }
 
